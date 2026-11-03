@@ -39,7 +39,7 @@ Example:
 `;
 
   const response = await ai.models.generateContent({
-    model: "gemini-2.0-flash",
+    model: "gemini-3.6-flash",
     contents: prompt,
   });
 
@@ -52,14 +52,21 @@ Example:
   return text;
 }
 
-// =====================================================
-// 2. EVALUATE INTERVIEW ANSWER
-// =====================================================
+export interface EvaluationResult {
+  score: number;
+  technicalAccuracy: number;
+  communication: number;
+  relevance: number;
+  completeness: number;
+  strengths: string[];
+  weaknesses: string[];
+  suggestions: string[];
+}
 
 export async function evaluateInterviewAnswer(
   question: string,
   answer: string
-) {
+): Promise<EvaluationResult> {
   const prompt = `
 You are an expert technical interviewer.
 
@@ -108,7 +115,7 @@ Rules:
 `;
 
   const response = await ai.models.generateContent({
-    model: "gemini-2.0-flash",
+    model: "gemini-3.6-flash",
     contents: prompt,
   });
 
@@ -119,8 +126,10 @@ Rules:
   }
 
   let cleanedText = text.trim();
-
-  if (cleanedText.startsWith("```")) {
+  const jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    cleanedText = jsonMatch[0];
+  } else if (cleanedText.startsWith("```")) {
     cleanedText = cleanedText
       .replace(/^```json\s*/i, "")
       .replace(/^```\s*/i, "")
@@ -129,7 +138,7 @@ Rules:
   }
 
   try {
-    return JSON.parse(cleanedText);
+    return JSON.parse(cleanedText) as EvaluationResult;
   } catch (error) {
     console.error(
       "Failed to parse interview evaluation:",
@@ -203,7 +212,7 @@ Rules:
 `;
 
   const response = await ai.models.generateContent({
-    model: "gemini-2.0-flash",
+    model: "gemini-3.6-flash",
     contents: prompt,
   });
 

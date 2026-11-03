@@ -75,11 +75,9 @@ const Navbar = () => {
 
           <div className="flex flex-col gap-5">
 
-            <a href="#features">Features</a>
-
-            <a href="#pricing">Pricing</a>
-
-            <a href="#about">About</a>
+            <a href="/#features" onClick={() => setMenuOpen(false)}>Features</a>
+<a href="/#pricing" onClick={() => setMenuOpen(false)}>Pricing</a>
+<a href="/#about" onClick={() => setMenuOpen(false)}>About</a>
 
             <Link to="/login">
               Login

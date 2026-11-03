@@ -22,26 +22,69 @@ interface SavedEvaluation extends Evaluation {
   answer: string;
 }
 
+function validateEvaluation(data: unknown): Evaluation {
+  if (typeof data !== "object" || data === null) {
+    throw new Error("Invalid evaluation response.");
+  }
+
+  const item = data as Record<string, unknown>;
+
+  const scoreFields = [
+    "score",
+    "technicalAccuracy",
+    "communication",
+    "relevance",
+    "completeness",
+  ];
+
+  for (const field of scoreFields) {
+    const value = item[field];
+
+    if (
+      typeof value !== "number" ||
+      !Number.isFinite(value) ||
+      value < 0 ||
+      value > 10
+    ) {
+      throw new Error(`Invalid evaluation score: ${field}`);
+    }
+  }
+
+  const listFields = ["strengths", "weaknesses", "suggestions"];
+
+  for (const field of listFields) {
+    const value = item[field];
+
+    if (
+      !Array.isArray(value) ||
+      !value.every((entry) => typeof entry === "string")
+    ) {
+      throw new Error(`Invalid evaluation list: ${field}`);
+    }
+  }
+
+  return item as unknown as Evaluation;
+}
+
 const MockInterview = () => {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const questions = (location.state?.questions || []) as string[];
+  const questions: string[] = Array.isArray(location.state?.questions)
+    ? location.state.questions.filter(
+        (question: unknown): question is string =>
+          typeof question === "string" && question.trim().length > 0
+      )
+    : [];
 
-  const [currentQuestionIndex, setCurrentQuestionIndex] =
-    useState(0);
-
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [submittedAnswer, setSubmittedAnswer] = useState("");
-
-  const [evaluation, setEvaluation] =
-    useState<Evaluation | null>(null);
-
-  // Stores evaluation of every completed question
+  const [evaluation, setEvaluation] = useState<Evaluation | null>(null);
   const [evaluations, setEvaluations] = useState<
-    SavedEvaluation[]
+    (SavedEvaluation | undefined)[]
   >([]);
-
   const [evaluating, setEvaluating] = useState(false);
+  const [error, setError] = useState("");
 
   const {
     transcript,
@@ -50,209 +93,187 @@ const MockInterview = () => {
     browserSupportsSpeechRecognition,
   } = useSpeechRecognition();
 
-  if (questions.length === 0) {
-    return (
-      <div className="min-h-screen bg-slate-100 p-8">
-        <div className="mx-auto max-w-4xl rounded-xl bg-white p-8 text-center shadow-lg">
-          <h1 className="text-2xl font-bold text-red-600">
-            No interview questions found.
-          </h1>
-
-          <p className="mt-3 text-slate-600">
-            Please generate interview questions first.
-          </p>
-
-          <button
-            onClick={() => navigate("/interview")}
-            className="mt-6 rounded-lg bg-blue-600 px-6 py-3 font-semibold text-white hover:bg-blue-700"
-          >
-            Go to Interview Generator
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (!browserSupportsSpeechRecognition) {
-    return (
-      <div className="min-h-screen bg-slate-100 p-8">
-        <div className="mx-auto max-w-4xl rounded-xl bg-white p-8 shadow-lg">
-          <h1 className="text-2xl font-bold text-red-600">
-            Speech Recognition Not Supported
-          </h1>
-
-          <p className="mt-3 text-slate-600">
-            Please use Google Chrome or another supported browser.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
   const currentQuestion = questions[currentQuestionIndex];
 
-  const handleStartRecording = () => {
-    resetTranscript();
+  const completedCount = evaluations.filter(
+    (item) => item !== undefined
+  ).length;
 
+  const handleStartRecording = async () => {
+    if (evaluating) return;
+
+    setError("");
     setSubmittedAnswer("");
     setEvaluation(null);
+    resetTranscript();
 
-    SpeechRecognition.startListening({
-      continuous: true,
-      language: "en-US",
-    });
+    try {
+      await SpeechRecognition.startListening({
+        continuous: true,
+        language: "en-US",
+      });
+    } catch (err) {
+      console.error("Could not start recording:", err);
+      setError(
+        "Could not start recording. Please check your microphone permissions."
+      );
+    }
   };
 
   const handleStopRecording = () => {
     SpeechRecognition.stopListening();
   };
 
+  const handleRetry = () => {
+    SpeechRecognition.stopListening();
+    resetTranscript();
+    setSubmittedAnswer("");
+    setEvaluation(null);
+    setError("");
+  };
+
   const handleSubmitAnswer = async () => {
-    if (!transcript.trim()) {
-      alert("Please record your answer first.");
+    if (listening) {
+      setError("Please stop recording before submitting your answer.");
       return;
     }
 
+    const answer = transcript.trim() || submittedAnswer.trim();
+
+    if (!answer) {
+      setError("Please record your answer before submitting.");
+      return;
+    }
+
+    if (evaluating || !currentQuestion) return;
+
+    setError("");
+    setEvaluating(true);
+
     try {
-      setEvaluating(true);
-
-      setSubmittedAnswer(transcript);
-
       const response = await evaluateInterviewAnswer(
         currentQuestion,
-        transcript
+        answer
       );
 
-      const cleaned = response
-        .replace(/```json/g, "")
-        .replace(/```/g, "")
-        .trim();
+      const parsed = validateEvaluation(response);
 
-      const parsed: Evaluation = JSON.parse(cleaned);
+      const newEvaluation: SavedEvaluation = {
+        question: currentQuestion,
+        answer,
+        ...parsed,
+      };
 
+      setSubmittedAnswer(answer);
       setEvaluation(parsed);
 
-      // Save this question's complete evaluation
       setEvaluations((previous) => {
-        const newEvaluation: SavedEvaluation = {
-          question: currentQuestion,
-          answer: transcript,
-          ...parsed,
-        };
-
-        // Prevent duplicate evaluation for the same question
-        const filtered = previous.filter(
-          (_, index) => index !== currentQuestionIndex
-        );
-
-        filtered.splice(
-          currentQuestionIndex,
-          0,
-          newEvaluation
-        );
-
-        return filtered;
+        const updated = [...previous];
+        updated[currentQuestionIndex] = newEvaluation;
+        return updated;
       });
-    } catch (error) {
-      console.error(error);
-      alert("Failed to evaluate your answer.");
+    } catch (err) {
+      console.error("Answer evaluation failed:", err);
+      setError(
+        "Failed to evaluate your answer. Please try again and check your AI configuration if the problem continues."
+      );
     } finally {
       setEvaluating(false);
     }
   };
 
   const handleNextQuestion = () => {
-    if (currentQuestionIndex < questions.length - 1) {
-      setCurrentQuestionIndex(
-        currentQuestionIndex + 1
-      );
+    if (evaluating || listening) {
+      setError("Please stop recording and wait for evaluation to finish.");
+      return;
+    }
 
-      resetTranscript();
+    if (!evaluation) {
+      setError("Please submit and evaluate your answer before continuing.");
+      return;
+    }
+
+    if (currentQuestionIndex >= questions.length - 1) return;
+
+    const nextIndex = currentQuestionIndex + 1;
+    const saved = evaluations[nextIndex];
+
+    setCurrentQuestionIndex(nextIndex);
+    resetTranscript();
+    setError("");
+
+    if (saved) {
+      setSubmittedAnswer(saved.answer);
+      setEvaluation(saved);
+    } else {
       setSubmittedAnswer("");
       setEvaluation(null);
     }
   };
 
   const handlePreviousQuestion = () => {
-    if (currentQuestionIndex > 0) {
-      const previousIndex = currentQuestionIndex - 1;
+    if (evaluating || listening || currentQuestionIndex === 0) return;
 
-      setCurrentQuestionIndex(previousIndex);
+    const previousIndex = currentQuestionIndex - 1;
+    const saved = evaluations[previousIndex];
 
-      resetTranscript();
+    setCurrentQuestionIndex(previousIndex);
+    resetTranscript();
+    setError("");
 
-      // Restore previous answer/evaluation if it exists
-      const previousEvaluation =
-        evaluations[previousIndex];
-
-      if (previousEvaluation) {
-        setSubmittedAnswer(previousEvaluation.answer);
-        setEvaluation(previousEvaluation);
-      } else {
-        setSubmittedAnswer("");
-        setEvaluation(null);
-      }
+    if (saved) {
+      setSubmittedAnswer(saved.answer);
+      setEvaluation(saved);
+    } else {
+      setSubmittedAnswer("");
+      setEvaluation(null);
     }
   };
 
   const handleFinishInterview = () => {
-    if (evaluations.length !== questions.length) {
-      alert(
-        `Please complete all questions before finishing. You have completed ${evaluations.length} of ${questions.length}.`
+    if (evaluating || listening) {
+      setError("Please stop recording and wait for evaluation to finish.");
+      return;
+    }
+
+    const allCompleted = questions.every(
+      (question, index) =>
+        evaluations[index]?.question === question
+    );
+
+    if (!allCompleted) {
+      setError(
+        `Please complete every question before finishing. You have completed ${completedCount} of ${questions.length}.`
       );
       return;
     }
 
-    // Calculate final averages
-    const totalScore = evaluations.reduce(
-      (sum, item) => sum + item.score,
-      0
-    );
+    const completedEvaluations = evaluations as SavedEvaluation[];
+    const count = completedEvaluations.length;
 
-    const totalTechnical = evaluations.reduce(
-      (sum, item) => sum + item.technicalAccuracy,
-      0
-    );
+    if (count === 0) {
+      setError("There are no completed evaluations to submit.");
+      return;
+    }
 
-    const totalCommunication = evaluations.reduce(
-      (sum, item) => sum + item.communication,
-      0
-    );
-
-    const totalRelevance = evaluations.reduce(
-      (sum, item) => sum + item.relevance,
-      0
-    );
-
-    const totalCompleteness = evaluations.reduce(
-      (sum, item) => sum + item.completeness,
-      0
-    );
-
-    const count = evaluations.length;
+    const average = (field: keyof Evaluation) =>
+      Number(
+        (
+          completedEvaluations.reduce(
+            (sum, item) => sum + (item[field] as number),
+            0
+          ) / count
+        ).toFixed(1)
+      );
 
     const result = {
-      evaluations,
-
-      overallScore: Number(
-        (totalScore / count).toFixed(1)
-      ),
-
-      technicalAccuracy: Number(
-        (totalTechnical / count).toFixed(1)
-      ),
-
-      communication: Number(
-        (totalCommunication / count).toFixed(1)
-      ),
-
-      relevance: Number(
-        (totalRelevance / count).toFixed(1)
-      ),
-
-      completeness: Number(
-        (totalCompleteness / count).toFixed(1)
-      ),
+      evaluations: completedEvaluations,
+      totalQuestions: questions.length,
+      overallScore: average("score"),
+      technicalAccuracy: average("technicalAccuracy"),
+      communication: average("communication"),
+      relevance: average("relevance"),
+      completeness: average("completeness"),
     };
 
     navigate("/interview-result", {
@@ -260,76 +281,115 @@ const MockInterview = () => {
     });
   };
 
-  return (
-    <div className="min-h-screen bg-slate-100 p-8">
-      <div className="mx-auto max-w-4xl">
+  if (questions.length === 0) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-100 p-6">
+        <section className="w-full max-w-xl rounded-2xl bg-white p-8 text-center shadow-lg">
+          <h1 className="text-2xl font-bold text-red-600">
+            No interview questions found
+          </h1>
+          <p className="mt-3 text-slate-600">
+            Generate interview questions before starting your mock interview.
+          </p>
+          <button
+            onClick={() => navigate("/interview")}
+            className="mt-6 rounded-lg bg-blue-600 px-6 py-3 font-semibold text-white hover:bg-blue-700"
+          >
+            Go to Interview Generator
+          </button>
+        </section>
+      </main>
+    );
+  }
 
-        {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-4xl font-bold text-slate-800">
+  if (!browserSupportsSpeechRecognition) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-100 p-6">
+        <section className="w-full max-w-xl rounded-2xl bg-white p-8 shadow-lg">
+          <h1 className="text-2xl font-bold text-red-600">
+            Speech Recognition Not Supported
+          </h1>
+          <p className="mt-3 text-slate-600">
+            Please use a supported browser, such as Google Chrome, and allow
+            microphone access. Browser speech recognition may require an
+            internet connection.
+          </p>
+          <button
+            onClick={() => navigate("/interview")}
+            className="mt-6 rounded-lg bg-blue-600 px-6 py-3 font-semibold text-white hover:bg-blue-700"
+          >
+            Back to Interview Generator
+          </button>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="min-h-screen bg-slate-100 px-4 py-8 sm:px-8">
+      <div className="mx-auto max-w-4xl">
+        <header className="mb-8">
+          <h1 className="text-3xl font-bold text-slate-800 sm:text-4xl">
             AI Mock Interview
           </h1>
-
           <p className="mt-2 text-slate-500">
-            Question {currentQuestionIndex + 1} of{" "}
-            {questions.length}
+            Question {currentQuestionIndex + 1} of {questions.length}
           </p>
-        </div>
+          <p className="mt-1 text-sm text-slate-500">
+            {completedCount} of {questions.length} questions evaluated
+          </p>
+        </header>
 
-        {/* Progress */}
-        <div className="mb-6 h-3 overflow-hidden rounded-full bg-slate-200">
+        <div
+          className="mb-6 h-3 overflow-hidden rounded-full bg-slate-200"
+          role="progressbar"
+          aria-label="Interview progress"
+          aria-valuemin={0}
+          aria-valuemax={questions.length}
+          aria-valuenow={completedCount}
+        >
           <div
-            className="h-full bg-blue-600 transition-all"
+            className="h-full rounded-full bg-blue-600 transition-all"
             style={{
-              width: `${
-                ((currentQuestionIndex + 1) /
-                  questions.length) *
-                100
-              }%`,
+              width: `${(completedCount / questions.length) * 100}%`,
             }}
           />
         </div>
 
-        {/* Question */}
-        <div className="rounded-xl bg-white p-8 shadow-lg">
-          <span className="rounded-full bg-blue-100 px-4 py-2 text-sm font-medium text-blue-600">
+        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+          <span className="rounded-full bg-blue-100 px-4 py-2 text-sm font-medium text-blue-700">
             Question {currentQuestionIndex + 1}
           </span>
-
-          <h2 className="mt-6 text-2xl font-semibold">
+          <h2 className="mt-6 text-2xl font-semibold text-slate-800">
             Interview Question
           </h2>
-
           <p className="mt-4 text-lg leading-8 text-slate-700">
             {currentQuestion}
           </p>
-        </div>
+        </section>
 
-        {/* Answer */}
-        <div className="mt-6 rounded-xl bg-white p-8 shadow-lg">
-          <h2 className="mb-4 text-xl font-semibold">
+        <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+          <h2 className="mb-4 text-xl font-semibold text-slate-800">
             Your Answer
           </h2>
 
           {listening ? (
             <p className="mb-5 font-medium text-red-600">
-              🔴 Listening... Speak your answer
+              🔴 Listening... Speak your answer.
             </p>
           ) : (
             <p className="mb-5 text-slate-500">
-              🎤 Click Start Recording and speak your answer.
+              🎤 Start recording, speak clearly, then stop recording.
             </p>
           )}
 
-          {/* Transcript */}
-          <div className="min-h-32 rounded-lg border border-slate-300 bg-slate-50 p-5">
-            {transcript ? (
+          <div
+            className="min-h-32 whitespace-pre-wrap rounded-lg border border-slate-300 bg-slate-50 p-5"
+            aria-live="polite"
+          >
+            {transcript || submittedAnswer ? (
               <p className="leading-7 text-slate-700">
-                {transcript}
-              </p>
-            ) : submittedAnswer ? (
-              <p className="leading-7 text-slate-700">
-                {submittedAnswer}
+                {transcript || submittedAnswer}
               </p>
             ) : (
               <p className="text-slate-400">
@@ -338,31 +398,37 @@ const MockInterview = () => {
             )}
           </div>
 
-          {/* Controls */}
-          <div className="mt-6 flex flex-wrap gap-4">
+          {error && (
+            <div
+              role="alert"
+              className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+            >
+              {error}
+            </div>
+          )}
+
+          <div className="mt-6 flex flex-wrap gap-3">
             {!listening ? (
               <button
                 onClick={handleStartRecording}
-                className="rounded-lg bg-red-500 px-6 py-3 font-semibold text-white hover:bg-red-600"
+                disabled={evaluating}
+                className="rounded-lg bg-red-500 px-5 py-3 font-semibold text-white hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 🎤 Start Recording
               </button>
             ) : (
               <button
                 onClick={handleStopRecording}
-                className="rounded-lg bg-slate-700 px-6 py-3 font-semibold text-white hover:bg-slate-800"
+                className="rounded-lg bg-slate-700 px-5 py-3 font-semibold text-white hover:bg-slate-800"
               >
                 ⏹ Stop Recording
               </button>
             )}
 
             <button
-              onClick={() => {
-                resetTranscript();
-                setSubmittedAnswer("");
-                setEvaluation(null);
-              }}
-              className="rounded-lg border border-slate-300 px-6 py-3 font-semibold text-slate-700 hover:bg-slate-100"
+              onClick={handleRetry}
+              disabled={evaluating}
+              className="rounded-lg border border-slate-300 px-5 py-3 font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
             >
               🔄 Retry
             </button>
@@ -370,171 +436,159 @@ const MockInterview = () => {
             <button
               onClick={handleSubmitAnswer}
               disabled={
-                !transcript.trim() ||
+                (!transcript.trim() && !submittedAnswer.trim()) ||
                 listening ||
                 evaluating
               }
-              className="rounded-lg bg-green-600 px-6 py-3 font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-lg bg-green-600 px-5 py-3 font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {evaluating
-                ? "🤖 Evaluating..."
-                : "Submit Answer"}
+              {evaluating ? "🤖 Evaluating..." : "Submit Answer"}
             </button>
           </div>
-        </div>
+        </section>
 
-        {/* Evaluation */}
         {evaluation && (
-          <div className="mt-6 rounded-xl bg-white p-8 shadow-lg">
-            <h2 className="mb-6 text-2xl font-bold">
+          <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+            <h2 className="mb-6 text-2xl font-bold text-slate-800">
               🤖 AI Evaluation
             </h2>
 
-            {/* Overall Score */}
             <div className="mb-6 rounded-xl bg-blue-50 p-6 text-center">
               <p className="text-sm font-medium text-slate-500">
                 Overall Score
               </p>
-
               <p className="mt-2 text-5xl font-bold text-blue-600">
                 {evaluation.score}/10
               </p>
             </div>
 
-            {/* Scores */}
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="rounded-lg border p-4">
-                <p className="text-sm text-slate-500">
-                  Technical Accuracy
-                </p>
-
-                <p className="mt-1 text-2xl font-bold">
-                  {evaluation.technicalAccuracy}/10
-                </p>
-              </div>
-
-              <div className="rounded-lg border p-4">
-                <p className="text-sm text-slate-500">
-                  Communication
-                </p>
-
-                <p className="mt-1 text-2xl font-bold">
-                  {evaluation.communication}/10
-                </p>
-              </div>
-
-              <div className="rounded-lg border p-4">
-                <p className="text-sm text-slate-500">
-                  Relevance
-                </p>
-
-                <p className="mt-1 text-2xl font-bold">
-                  {evaluation.relevance}/10
-                </p>
-              </div>
-
-              <div className="rounded-lg border p-4">
-                <p className="text-sm text-slate-500">
-                  Completeness
-                </p>
-
-                <p className="mt-1 text-2xl font-bold">
-                  {evaluation.completeness}/10
-                </p>
-              </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {(
+                [
+                  ["Technical Accuracy", evaluation.technicalAccuracy],
+                  ["Communication", evaluation.communication],
+                  ["Relevance", evaluation.relevance],
+                  ["Completeness", evaluation.completeness],
+                ] as [string, number][]
+              ).map(([label, score]) => (
+                <div key={label} className="rounded-lg border p-4">
+                  <p className="text-sm text-slate-500">{label}</p>
+                  <p className="mt-1 text-2xl font-bold text-slate-800">
+                    {score}/10
+                  </p>
+                </div>
+              ))}
             </div>
 
-            {/* Strengths */}
             <div className="mt-8">
               <h3 className="mb-3 text-xl font-semibold text-green-600">
                 💪 Strengths
               </h3>
-
-              <ul className="space-y-2">
-                {evaluation.strengths.map(
-                  (item, index) => (
+              {evaluation.strengths.length > 0 ? (
+                <ul className="space-y-2">
+                  {evaluation.strengths.map((item, index) => (
                     <li
-                      key={index}
-                      className="rounded-lg bg-green-50 p-3"
+                      key={`${index}-${item}`}
+                      className="rounded-lg bg-green-50 p-3 text-slate-700"
                     >
                       ✅ {item}
                     </li>
-                  )
-                )}
-              </ul>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-slate-500">No strengths provided.</p>
+              )}
             </div>
 
-            {/* Weaknesses */}
             <div className="mt-8">
               <h3 className="mb-3 text-xl font-semibold text-red-600">
                 ⚠️ Areas to Improve
               </h3>
-
-              <ul className="space-y-2">
-                {evaluation.weaknesses.map(
-                  (item, index) => (
+              {evaluation.weaknesses.length > 0 ? (
+                <ul className="space-y-2">
+                  {evaluation.weaknesses.map((item, index) => (
                     <li
-                      key={index}
-                      className="rounded-lg bg-red-50 p-3"
+                      key={`${index}-${item}`}
+                      className="rounded-lg bg-red-50 p-3 text-slate-700"
                     >
                       ⚠️ {item}
                     </li>
-                  )
-                )}
-              </ul>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-slate-500">No weaknesses provided.</p>
+              )}
             </div>
 
-            {/* Suggestions */}
             <div className="mt-8">
               <h3 className="mb-3 text-xl font-semibold text-blue-600">
                 💡 Suggestions
               </h3>
-
-              <ul className="space-y-2">
-                {evaluation.suggestions.map(
-                  (item, index) => (
+              {evaluation.suggestions.length > 0 ? (
+                <ul className="space-y-2">
+                  {evaluation.suggestions.map((item, index) => (
                     <li
-                      key={index}
-                      className="rounded-lg bg-blue-50 p-3"
+                      key={`${index}-${item}`}
+                      className="rounded-lg bg-blue-50 p-3 text-slate-700"
                     >
                       💡 {item}
                     </li>
-                  )
-                )}
-              </ul>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-slate-500">No suggestions provided.</p>
+              )}
             </div>
 
-            {/* Navigation */}
-            <div className="mt-10 flex justify-between">
+            <div className="mt-10 flex flex-wrap justify-between gap-3">
               <button
                 onClick={handlePreviousQuestion}
-                disabled={currentQuestionIndex === 0}
-                className="rounded-lg border border-slate-300 px-6 py-3 font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                disabled={currentQuestionIndex === 0 || evaluating || listening}
+                className="rounded-lg border border-slate-300 px-5 py-3 font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 ← Previous
               </button>
 
-              {currentQuestionIndex <
-              questions.length - 1 ? (
+              {currentQuestionIndex < questions.length - 1 ? (
                 <button
                   onClick={handleNextQuestion}
-                  className="rounded-lg bg-blue-600 px-6 py-3 font-semibold text-white hover:bg-blue-700"
+                  disabled={evaluating || listening}
+                  className="rounded-lg bg-blue-600 px-5 py-3 font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Next Question →
                 </button>
               ) : (
                 <button
                   onClick={handleFinishInterview}
-                  className="rounded-lg bg-green-600 px-6 py-3 font-semibold text-white hover:bg-green-700"
+                  disabled={evaluating || listening}
+                  className="rounded-lg bg-green-600 px-5 py-3 font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   🎉 Finish Interview
                 </button>
               )}
             </div>
-          </div>
+          </section>
         )}
+
+        <div className="mt-6 flex justify-between gap-3">
+          <button
+            onClick={handlePreviousQuestion}
+            disabled={currentQuestionIndex === 0 || evaluating || listening}
+            className="rounded-lg border border-slate-300 bg-white px-5 py-3 font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            ← Previous Question
+          </button>
+
+          <button
+            onClick={() => navigate("/interview")}
+            disabled={evaluating}
+            className="rounded-lg border border-slate-300 bg-white px-5 py-3 font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+          >
+            Exit Interview
+          </button>
+        </div>
       </div>
-    </div>
+    </main>
   );
 };
 

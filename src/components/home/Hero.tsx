@@ -1,4 +1,6 @@
+
 import { motion } from "framer-motion";
+import { Link } from "react-router-dom";
 import Button from "../ui/Button";
 
 const Hero = () => {
@@ -31,16 +33,17 @@ const Hero = () => {
         </p>
 
         <div className="mt-10 flex flex-wrap gap-4">
-          <Button>Start Free</Button>
+          <Link to="/signup">
+            <Button>Start Free</Button>
+          </Link>
 
-          <Button variant="secondary">
-            Learn More
-          </Button>
+          <a href="/#features">
+            <Button variant="secondary">Learn More</Button>
+          </a>
         </div>
 
         {/* Stats */}
         <div className="mt-12 flex flex-wrap gap-8">
-
           <div>
             <h2 className="text-3xl font-bold text-blue-600">10K+</h2>
             <p className="text-slate-600">Mock Interviews</p>
@@ -55,7 +58,6 @@ const Hero = () => {
             <h2 className="text-3xl font-bold text-blue-600">24/7</h2>
             <p className="text-slate-600">AI Assistance</p>
           </div>
-
         </div>
       </motion.div>
 
@@ -67,9 +69,7 @@ const Hero = () => {
         transition={{ duration: 1 }}
       >
         <div className="flex h-96 w-96 items-center justify-center rounded-3xl bg-gradient-to-br from-blue-100 to-indigo-100 shadow-2xl">
-
           <span className="text-[150px]">🤖</span>
-
         </div>
       </motion.div>
 
