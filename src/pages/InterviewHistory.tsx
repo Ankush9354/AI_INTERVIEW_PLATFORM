@@ -36,16 +36,16 @@ const InterviewHistory = () => {
 
         // Fetch interview history from MongoDB backend
         const response = await fetch(
-  `http://localhost:5000/api/interviews/${encodeURIComponent(user.uid)}`,
-  {
-    method: "GET",
-    cache: "no-store",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Cache-Control": "no-cache",
-    },
-  }
-);
+          `${import.meta.env.VITE_API_URL}/api/interviews/${encodeURIComponent(user.uid)}`,
+          {
+            method: "GET",
+            cache: "no-store",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Cache-Control": "no-cache",
+            },
+          }
+        );
 
         const data = await response.json();
 
